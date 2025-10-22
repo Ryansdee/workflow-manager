@@ -16,7 +16,7 @@ const ROLES = [
   { key: "owner", label: "Propriétaire", icon: Crown, description: "Contrôle total du projet", color: "text-amber-600" },
   { key: "project_manager", label: "Chef de projet", icon: Briefcase, description: "Gère l'équipe et les tâches", color: "text-blue-600" },
   { key: "developer", label: "Développeur", icon: Code, description: "Crée et modifie les tâches", color: "text-green-600" },
-  { key: "viewer", label: "Observateur", icon: Shield, description: "Lecture seule", color: "text-neutral-600" },
+  { key: "viewer", label: "Observateur", icon: Shield, description: "Lecture seule", color: "text-gray-600" },
 ];
 
 export default function WorkflowPage() {
@@ -96,42 +96,74 @@ export default function WorkflowPage() {
     return idx < statuses.length - 1 ? statuses[idx + 1] : null;
   };
 
-  const handleInviteMember = async () => {
-    if (!inviteEmail.trim() || !user) return;
-    setInviting(true);
-    try {
-      const usersRef = collection(db, "users");
-      const q = query(usersRef, where("email", "==", inviteEmail.trim()));
-      const snapshot = await getDocs(q);
+const handleInviteMember = async () => {
+  if (!inviteEmail.trim() || !user) return;
+  setInviting(true);
 
-      let invitedUserData: any;
-      let invitedUserId: string;
+  try {
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("email", "==", inviteEmail.trim()));
+    const snapshot = await getDocs(q);
 
-      if (!snapshot.empty) {
-        const invitedUser = snapshot.docs[0];
-        invitedUserData = invitedUser.data();
-        invitedUserId = invitedUser.id;
-      } else {
-        // Générer un ID temporaire pour l'invitation (utilisateur non inscrit)
-        invitedUserId = crypto.randomUUID();
-        invitedUserData = { email: inviteEmail, name: inviteEmail };
-        // TODO: ici tu peux envoyer un email avec un lien d'inscription + workflowId + role
+    let invitedUserData: any;
+    let invitedUserId: string;
+
+    if (!snapshot.empty) {
+      // L'utilisateur existe déjà
+      const invitedUser = snapshot.docs[0];
+      invitedUserData = invitedUser.data();
+      invitedUserId = invitedUser.id;
+
+      // Vérifier si déjà membre
+      const isAlreadyMember = workflow.members?.some((m: Member) => m.uid === invitedUserId);
+      if (isAlreadyMember) {
+        alert("Cet utilisateur est déjà membre");
+        setInviting(false);
+        return;
       }
 
-      const isAlreadyMember = workflow.members?.some((m: Member) => m.uid === invitedUserId);
-      if (isAlreadyMember) { alert("Cet utilisateur est déjà membre"); setInviting(false); return; }
-
-      const newMember: Member = { uid: invitedUserId, email: invitedUserData.email, name: invitedUserData.name || invitedUserData.email, role: inviteRole as any, addedAt: Date.now() };
-
-      if (!workflowId) return;
+      // Ajouter directement au workflow
+      const newMember: Member = {
+        uid: invitedUserId,
+        email: invitedUserData.email,
+        name: invitedUserData.name || invitedUserData.email,
+        role: inviteRole as any,
+        addedAt: Date.now(),
+      };
 
       const workflowRef = doc(db, "workflows", workflowId);
       await updateDoc(workflowRef, { members: arrayUnion(newMember) });
       setWorkflow({ ...workflow, members: [...(workflow.members || []), newMember] });
-      setInviteEmail(""); setInviteRole("developer"); setShowInviteModal(false);
+
       alert(`${invitedUserData.name || invitedUserData.email} a été ajouté au projet !`);
-    } catch (err) { console.error(err); } finally { setInviting(false); }
-  };
+    } else {
+      // Utilisateur non inscrit → envoyer invitation par mail via l'API
+      const inviteLink = `${window.location.origin}/register?invite=${crypto.randomUUID()}&workflowId=${workflowId}&role=${inviteRole}`;
+
+      await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: inviteEmail,
+          name: inviteEmail,
+          projectName: workflow.name,
+          inviteLink,
+        }),
+      });
+
+      alert(`Invitation envoyée à ${inviteEmail} !`);
+    }
+
+    setInviteEmail("");
+    setInviteRole("developer");
+    setShowInviteModal(false);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setInviting(false);
+  }
+};
+
 
   const handleAddTask = async (status: string) => {
     if (!newTask.title.trim() || !canCreateTasks() || !user) return;
@@ -171,21 +203,21 @@ export default function WorkflowPage() {
       <div className="bg-white border-b border-neutral-200 sticky top-0 z-10">
         <div className="max-w-[1800px] mx-auto px-4 sm:px-8 py-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h1 className="text-2xl font-semibold text-neutral-900 mb-2">{workflow.name}</h1>
+            <h1 className="text-2xl font-semibold text-gray-900 mb-2">{workflow.name}</h1>
             <div className="flex flex-wrap gap-4 text-sm">
-              <div className="flex items-center gap-2 text-neutral-500">
+              <div className="flex items-center gap-2 text-gray-500">
                 <User className="w-4 h-4" />
-                <span className="text-neutral-900 font-medium">{owner?.name || "Inconnu"}</span>
+                <span className="text-gray-900 font-medium">{owner?.name || "Inconnu"}</span>
               </div>
-              <div className="flex items-center gap-2 text-neutral-500">
+              <div className="flex items-center gap-2 text-gray-500">
                 <RoleIcon className={`w-4 h-4 ${getRoleInfo(getCurrentUserRole()).color}`} />
                 <span className={`font-medium ${getRoleInfo(getCurrentUserRole()).color}`}>{getRoleInfo(getCurrentUserRole()).label}</span>
               </div>
-              <span className="text-neutral-500">{tasks.length} tâches</span>
+              <span className="text-gray-500">{tasks.length} tâches</span>
             </div>
           </div>
           <div className="flex flex-wrap gap-3 w-full sm:w-auto">
-            <button onClick={() => setShowMembersModal(true)} className="flex items-center gap-2 px-4 py-2 border border-neutral-300 hover:border-neutral-400 rounded-lg text-sm font-medium text-neutral-700 hover:text-neutral-900 transition-colors w-full sm:w-auto">
+            <button onClick={() => setShowMembersModal(true)} className="flex items-center gap-2 px-4 py-2 border border-neutral-300 hover:border-neutral-400 rounded-lg text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors w-full sm:w-auto">
               <Users className="w-4 h-4" />
               {workflow.members?.length || 0} membre{(workflow.members?.length || 0) > 1 ? 's' : ''}
             </button>
@@ -206,17 +238,17 @@ export default function WorkflowPage() {
             <div key={status.key} className="flex flex-col">
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-sm font-semibold text-neutral-900 uppercase tracking-wider">{status.label}</h2>
-                  <span className="text-sm font-medium text-neutral-400">{getTaskCount(status.key)}</span>
+                  <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">{status.label}</h2>
+                  <span className="text-sm font-medium text-gray-400">{getTaskCount(status.key)}</span>
                 </div>
                 <div className="h-0.5 bg-neutral-900 w-12"></div>
               </div>
               <div className="space-y-4 flex-1">
                 {tasks.filter(t => t.status === status.key).map(task => (
                   <div key={task.id} onClick={() => setSelectedTask(task)} className="group bg-white border border-neutral-200 hover:border-neutral-900 rounded-lg p-4 cursor-pointer transition-all duration-200 hover:shadow-lg">
-                    <h3 className="font-medium text-neutral-900 mb-1">{task.title}</h3>
-                    {task.description && <p className="text-sm text-neutral-600 line-clamp-2">{task.description}</p>}
-                    <div className="flex items-center justify-between text-xs text-neutral-400 pt-2 border-t border-neutral-100 mt-2">
+                    <h3 className="font-medium text-gray-900 mb-1">{task.title}</h3>
+                    {task.description && <p className="text-sm text-gray-600 line-clamp-2">{task.description}</p>}
+                    <div className="flex items-center justify-between text-xs text-gray-400 pt-2 border-t border-neutral-100 mt-2">
                       <div className="flex items-center gap-2">
                         {task.comments.length > 0 && <span>{task.comments.length} <MessageSquare className="w-3 h-3 inline" /></span>}
                         {task.createdAt && <span>{formatTimestamp(task.createdAt)} <Clock className="w-3 h-3 inline" /></span>}
@@ -236,11 +268,11 @@ export default function WorkflowPage() {
                       <textarea placeholder="Description" className="w-full border-b border-neutral-200 focus:border-neutral-900 focus:ring-0 text-sm py-1 resize-none" rows={2} value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})}></textarea>
                       <div className="flex gap-2">
                         <button className="flex-1 bg-neutral-900 text-white rounded py-1 text-sm" onClick={() => handleAddTask(status.key)}>Créer</button>
-                        <button className="px-3 py-1 text-sm text-neutral-500" onClick={() => setShowNewTaskForm(null)}>Annuler</button>
+                        <button className="px-3 py-1 text-sm text-gray-500" onClick={() => setShowNewTaskForm(null)}>Annuler</button>
                       </div>
                     </div>
                   ) : (
-                    <button className="w-full border-2 border-dashed border-neutral-300 rounded-lg py-6 flex items-center justify-center gap-2 text-neutral-400 hover:text-neutral-600 transition-all" onClick={() => setShowNewTaskForm(status.key)}>
+                    <button className="w-full border-2 border-dashed border-neutral-300 rounded-lg py-6 flex items-center justify-center gap-2 text-gray-400 hover:text-gray-600 transition-all" onClick={() => setShowNewTaskForm(status.key)}>
                       <Plus className="w-5 h-5" /> Nouvelle tâche
                     </button>
                   )
@@ -256,8 +288,8 @@ export default function WorkflowPage() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4 sm:p-6 backdrop-blur-sm" onClick={() => setShowMembersModal(false)}>
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-md sm:max-w-xl md:max-w-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="border-b border-neutral-200 px-6 py-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-neutral-900">Membres</h2>
-              <button onClick={() => setShowMembersModal(false)}><X className="w-5 h-5 text-neutral-400 hover:text-neutral-900" /></button>
+              <h2 className="text-lg font-semibold text-gray-900">Membres</h2>
+              <button onClick={() => setShowMembersModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-900" /></button>
             </div>
             <div className="p-6 space-y-4">
               {/* Owner */}
@@ -265,8 +297,8 @@ export default function WorkflowPage() {
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-amber-600 flex items-center justify-center text-white font-semibold">{owner?.name?.charAt(0).toUpperCase()}</div>
                   <div>
-                    <p className="font-medium text-neutral-900">{owner?.name}</p>
-                    <p className="text-sm text-neutral-500">{owner?.email}</p>
+                    <p className="font-medium text-gray-900">{owner?.name}</p>
+                    <p className="text-sm text-gray-500">{owner?.email}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 text-amber-700"><Crown className="w-4 h-4" /><span className="text-sm font-medium">Propriétaire</span></div>
@@ -280,8 +312,8 @@ export default function WorkflowPage() {
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">{String(member.name || '').charAt(0).toUpperCase()}</div>
                       <div>
-                        <p className="font-medium text-neutral-900">{member.name}</p>
-                        <p className="text-sm text-neutral-500">{member.email}</p>
+                        <p className="font-medium text-gray-900">{member.name}</p>
+                        <p className="text-sm text-gray-500">{member.email}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -340,13 +372,13 @@ export default function WorkflowPage() {
       {showInviteModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4 sm:p-6 backdrop-blur-sm" onClick={() => setShowInviteModal(false)}>
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-md sm:max-w-xl p-6" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold text-neutral-900 mb-4">Inviter un membre</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Inviter un membre</h2>
             <input type="email" placeholder="Email" className="w-full border border-neutral-300 rounded px-3 py-2 mb-4 focus:border-neutral-900 focus:ring-0" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} />
             <select className="w-full border border-neutral-300 rounded px-3 py-2 mb-4" value={inviteRole} onChange={e => setInviteRole(e.target.value)}>
               {ROLES.filter(r => r.key !== "owner").map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
             </select>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setShowInviteModal(false)} className="px-4 py-2 rounded border border-neutral-300 text-neutral-600 hover:text-neutral-900">Annuler</button>
+              <button onClick={() => setShowInviteModal(false)} className="px-4 py-2 rounded border border-neutral-300 text-gray-600 hover:text-gray-900">Annuler</button>
               <button onClick={handleInviteMember} disabled={inviting} className="px-4 py-2 rounded bg-neutral-900 text-white hover:bg-neutral-800">{inviting ? "Envoi..." : "Inviter"}</button>
             </div>
           </div>
@@ -358,28 +390,28 @@ export default function WorkflowPage() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4 sm:p-6 backdrop-blur-sm" onClick={() => setSelectedTask(null)}>
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-neutral-900">{selectedTask.title}</h2>
-              <button onClick={() => setSelectedTask(null)}><X className="w-5 h-5 text-neutral-400 hover:text-neutral-900" /></button>
+              <h2 className="text-lg font-semibold text-gray-900">{selectedTask.title}</h2>
+              <button onClick={() => setSelectedTask(null)}><X className="w-5 h-5 text-gray-400 hover:text-gray-900" /></button>
             </div>
-            <p className="text-sm text-neutral-600 mb-4">{selectedTask.description}</p>
+            <p className="text-sm text-gray-600 mb-4">{selectedTask.description}</p>
             <div className="flex gap-2 mb-4 flex-wrap">
-              <span className="text-xs bg-neutral-100 px-2 py-1 rounded">{getRoleInfo(selectedTask.status)?.label || selectedTask.status}</span>
-              <span className="text-xs bg-neutral-100 px-2 py-1 rounded">{formatTimestamp(selectedTask.createdAt)}</span>
+              <span className="text-xs bg-neutral-100 text-gray-600 px-2 py-1 rounded">{getRoleInfo(selectedTask.status)?.label || selectedTask.status}</span>
+              <span className="text-xs bg-neutral-100 text-gray-600 px-2 py-1 rounded">{formatTimestamp(selectedTask.createdAt)}</span>
             </div>
             <div className="space-y-3">
-              <h3 className="font-medium text-neutral-900">Commentaires</h3>
+              <h3 className="font-medium text-gray-900">Commentaires</h3>
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {selectedTask.comments.map((c, idx) => (
                   <div key={idx} className="flex flex-col bg-neutral-50 p-2 rounded">
-                    <span className="text-sm font-medium text-neutral-900">{c.userName}</span>
-                    <span className="text-sm text-neutral-600">{c.text}</span>
-                    <span className="text-xs text-neutral-400">{formatTimestamp(c.timestamp)}</span>
+                    <span className="text-sm font-medium text-gray-900">{c.userName}</span>
+                    <span className="text-sm text-gray-600">{c.text}</span>
+                    <span className="text-xs text-gray-400">{formatTimestamp(c.timestamp)}</span>
                   </div>
                 ))}
               </div>
               <div className="flex gap-2 mt-2">
-                <input type="text" placeholder="Ajouter un commentaire" className="flex-1 border border-neutral-300 rounded px-3 py-2 focus:border-neutral-900 focus:ring-0 text-sm" value={commentText} onChange={e => setCommentText(e.target.value)} />
-                <button onClick={() => handleAddComment(selectedTask.id)} className="px-4 py-2 rounded bg-neutral-900 text-white hover:bg-neutral-800"><Send className="w-4 h-4" /></button>
+                <input type="text" placeholder="Ajouter un commentaire" className="flex-1 border border-gray-300 text-gray-500 rounded px-3 py-2 focus:border-gray-900 focus:ring-0 text-sm" value={commentText} onChange={e => setCommentText(e.target.value)} />
+                <button onClick={() => handleAddComment(selectedTask.id)} className="px-4 py-2 rounded bg-gray-900 text-white hover:bg-neutral-800"><Send className="w-4 h-4" /></button>
               </div>
             </div>
           </div>
