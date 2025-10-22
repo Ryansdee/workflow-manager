@@ -100,6 +100,13 @@ const handleInviteMember = async () => {
   if (!inviteEmail.trim() || !user) return;
   setInviting(true);
 
+  // ensure we have a workflowId before calling Firestore APIs that require it
+  if (!workflowId) {
+    alert("Workflow introuvable");
+    setInviting(false);
+    return;
+  }
+
   try {
     const usersRef = collection(db, "users");
     const q = query(usersRef, where("email", "==", inviteEmail.trim()));
