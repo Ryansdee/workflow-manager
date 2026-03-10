@@ -102,6 +102,7 @@ export default function WorkflowPage() {
   const [inviteEmail, setInviteEmail]           = useState("");
   const [inviteRole, setInviteRole]             = useState("developer");
   const [inviting, setInviting]                 = useState(false);
+  const [inviteStatus, setInviteStatus]         = useState<"idle"|"success"|"error">("idle");
 
   // Filters
   const [filterAssignee, setFilterAssignee] = useState<string>("all");
@@ -153,7 +154,7 @@ export default function WorkflowPage() {
   }, [workflowId, user]);
 
   // ── PERMISSIONS ────────────────────────────────────────────────────────────
-  const currentRole     = useMemo(() => {
+  const currentRole = useMemo(() => {
     if (!workflow || !user) return "viewer";
     if (workflow.ownerId === user.uid) return "owner";
     return workflow.members?.find((m: Member) => m.uid === user.uid)?.role || "viewer";
@@ -259,28 +260,82 @@ export default function WorkflowPage() {
     if (selectedTask?.id===taskId) setSelectedTask(prev => prev ? {...prev,[field]:value} : prev);
   };
 
+  // ── INVITE ────────────────────────────────────────────────────────────────
   const handleInviteMember = async () => {
-    if (!inviteEmail.trim() || !user || !workflowId) return;
+    if (!inviteEmail.trim() || !workflowId || !user) return;
     setInviting(true);
+    setInviteStatus("idle");
+
     try {
-      const snapshot = await getDocs(query(collection(db, "users"), where("email","==",inviteEmail.trim())));
-      if (!snapshot.empty) {
-        const inv = snapshot.docs[0];
-        const invData = inv.data(); const invId = inv.id;
-        if (workflow.members?.some((m:Member)=>m.uid===invId)) { alert("Déjà membre"); setInviting(false); return; }
-        const newMember: Member = { uid:invId, email:invData.email, name:invData.name||invData.email, role:inviteRole as any, addedAt:Date.now() };
-        const newMemberIds = [...(workflow.memberIds||[]), invId];
-        await updateDoc(doc(db,"workflows",workflowId), { members:arrayUnion(newMember), memberIds:newMemberIds });
-        setWorkflow({...workflow, members:[...(workflow.members||[]),newMember], memberIds:newMemberIds});
-        alert(`${invData.name||invData.email} ajouté !`);
+      // 1. Chercher l'utilisateur par email dans Firestore
+      const usersSnap = await getDocs(
+        query(collection(db, "users"), where("email", "==", inviteEmail.trim()))
+      );
+
+      if (!usersSnap.empty) {
+        // Utilisateur existant → l'ajouter directement au workflow
+        const invDoc = usersSnap.docs[0];
+        const invData = invDoc.data();
+        const invId = invDoc.id;
+
+        if (workflow.memberIds?.includes(invId) || workflow.ownerId === invId) {
+          alert("Cet utilisateur est déjà membre du projet.");
+          return;
+        }
+
+        const newMember: Member = {
+          uid: invId,
+          email: invData.email,
+          name: invData.firstName ? `${invData.firstName} ${invData.lastName || ""}`.trim() : invData.email,
+          role: inviteRole as Member["role"],
+          addedAt: Date.now(),
+        };
+
+        await updateDoc(doc(db, "workflows", workflowId), {
+          members: arrayUnion(newMember),
+          memberIds: arrayUnion(invId),
+        });
+
+        setWorkflow((prev: any) => ({
+          ...prev,
+          members: [...(prev.members || []), newMember],
+          memberIds: [...(prev.memberIds || []), invId],
+        }));
+
+        setInviteStatus("success");
       } else {
-        const link = `${window.location.origin}/register?invite=${crypto.randomUUID()}&workflowId=${workflowId}&role=${inviteRole}`;
-        await fetch("/api/invite",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:inviteEmail,name:inviteEmail,projectName:workflow.name,inviteLink:link})});
-        alert(`Invitation envoyée à ${inviteEmail} !`);
+        // Utilisateur non inscrit → envoyer un email d'invitation
+        const inviteLink = `${window.location.origin}/auth/register?invite=${workflowId}&role=${inviteRole}`;
+
+        const res = await fetch("/api/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: inviteEmail.trim(),
+            name: inviteEmail.trim(),       // fallback sur l'email si pas de nom
+            projectName: workflow.name,
+            inviteLink,
+          }),
+        });
+
+        if (!res.ok) throw new Error("Échec de l'envoi de l'email");
+        setInviteStatus("success");
       }
-      setInviteEmail(""); setInviteRole("developer"); setShowInviteModal(false);
-    } catch(e){console.error(e);}
-    finally{setInviting(false);}
+
+      // Reset après 2s et fermeture
+      setTimeout(() => {
+        setInviteEmail("");
+        setInviteRole("developer");
+        setInviteStatus("idle");
+        setShowInviteModal(false);
+      }, 1500);
+
+    } catch (e) {
+      console.error(e);
+      setInviteStatus("error");
+    } finally {
+      setInviting(false);
+    }
   };
 
   // ── LOADING / ERROR ────────────────────────────────────────────────────────
@@ -409,7 +464,7 @@ export default function WorkflowPage() {
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
                     <div style={{display:"flex",alignItems:"center",gap:5}}>
                       <User style={{width:12,height:12,color:"#A0A0A8"}}/>
-                      <span style={{fontSize:12,color:"#888"}}>{owner?.name||"Inconnu"}</span>
+                      <span style={{fontSize:12,color:"#888"}}>{owner?.name||owner?.firstName||"Inconnu"}</span>
                     </div>
                     <span style={{fontSize:12,color:"#C0C0C4"}}>·</span>
                     <span style={{fontSize:12,color:"#888"}}>{tasks.length} tâche{tasks.length>1?"s":""}</span>
@@ -435,7 +490,6 @@ export default function WorkflowPage() {
                 </button>
 
                 {showFilters && <>
-                  {/* Assignee filter */}
                   <select className="filter-pill" value={filterAssignee} onChange={e=>setFilterAssignee(e.target.value)} style={{paddingRight:24}}>
                     <option value="all">Tous les membres</option>
                     {workflow.members?.map((m:Member)=>(
@@ -443,7 +497,6 @@ export default function WorkflowPage() {
                     ))}
                   </select>
 
-                  {/* Priority filter */}
                   <select className="filter-pill" value={filterPriority} onChange={e=>setFilterPriority(e.target.value)} style={{paddingRight:24}}>
                     <option value="all">Toutes priorités</option>
                     {Object.entries(PRIORITY_CONFIG).map(([k,v])=>(
@@ -451,7 +504,6 @@ export default function WorkflowPage() {
                     ))}
                   </select>
 
-                  {/* Label filter */}
                   {allLabels.length>0 && (
                     <select className="filter-pill" value={filterLabel} onChange={e=>setFilterLabel(e.target.value)} style={{paddingRight:24}}>
                       <option value="all">Tous les labels</option>
@@ -477,7 +529,6 @@ export default function WorkflowPage() {
                 const allColTasks = tasks.filter(t=>t.status===status.key);
                 return (
                   <div key={status.key} className="fade-up" style={{animationDelay:`${colIdx*.05}s`}}>
-                    {/* Column header */}
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
                       <div style={{display:"flex",alignItems:"center",gap:7}}>
                         <div style={{width:8,height:8,borderRadius:"50%",background:status.color}}/>
@@ -501,7 +552,6 @@ export default function WorkflowPage() {
                           <div key={task.id} className="task-card fade-up" style={{animationDelay:`${colIdx*.05+ti*.03}s`}} onClick={()=>setSelectedTask(task)}>
                             <div style={{height:3,borderRadius:999,background:status.color,marginBottom:11}}/>
 
-                            {/* Priority + labels row */}
                             <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:8,flexWrap:"wrap"}}>
                               {prio && (
                                 <span className="priority-badge" style={{background:prio.bg,color:prio.color}}>
@@ -524,35 +574,29 @@ export default function WorkflowPage() {
                               </p>
                             )}
 
-                            {/* Footer */}
                             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",paddingTop:9,borderTop:"1px solid #F0F0F2",gap:6}}>
                               <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                                {/* Assignee avatar */}
                                 {task.assignedTo && (
                                   <div style={{width:20,height:20,borderRadius:"50%",background:"linear-gradient(135deg,#4F46E5,#7C3AED)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"#fff"}} title={getMemberName(task.assignedTo)}>
                                     {getMemberInitial(task.assignedTo)}
                                   </div>
                                 )}
-                                {/* Due date */}
                                 {task.dueDate && (
                                   <span style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:over?"#EF4444":soon?"#F59E0B":"#A0A0A8",fontWeight:over||soon?600:400}}>
                                     <Calendar style={{width:10,height:10}}/>{new Date(task.dueDate).toLocaleDateString("fr-FR",{day:"2-digit",month:"short"})}
                                   </span>
                                 )}
-                                {/* Subtasks */}
                                 {totalSubtasks>0 && (
                                   <span style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:doneSubtasks===totalSubtasks?"#10B981":"#A0A0A8"}}>
                                     <CheckSquare style={{width:10,height:10}}/>{doneSubtasks}/{totalSubtasks}
                                   </span>
                                 )}
-                                {/* Comments */}
                                 {task.comments.length>0 && (
                                   <span style={{display:"flex",alignItems:"center",gap:3,fontSize:10,color:"#A0A0A8"}}>
                                     <MessageSquare style={{width:10,height:10}}/>{task.comments.length}
                                   </span>
                                 )}
                               </div>
-                              {/* Move button */}
                               {canEdit && (() => {
                                 const idx = STATUS_CONFIG.findIndex(s=>s.key===task.status);
                                 const next = idx < STATUS_CONFIG.length-1 ? STATUS_CONFIG[idx+1] : null;
@@ -569,32 +613,23 @@ export default function WorkflowPage() {
                         );
                       })}
 
-                      {/* Add task button */}
                       {status.isInitial && canEdit && (
                         showNewTaskForm===status.key ? (
                           <div style={{background:"#fff",border:"1.5px dashed #C7C7FF",borderRadius:14,padding:14}} className="fade-up">
                             <input autoFocus type="text" placeholder="Titre *" className="input-field" style={{marginBottom:7}} value={newTask.title} onChange={e=>setNewTask({...newTask,title:e.target.value})}/>
                             <textarea placeholder="Description" className="input-field" style={{resize:"none",marginBottom:7}} rows={2} value={newTask.description} onChange={e=>setNewTask({...newTask,description:e.target.value})}/>
-
-                            {/* Assignee */}
                             <select className="input-field" style={{marginBottom:7}} value={newTask.assignedTo} onChange={e=>setNewTask({...newTask,assignedTo:e.target.value})}>
                               <option value="">Assigné à...</option>
                               {workflow.members?.map((m:Member)=>(
                                 <option key={m.uid} value={m.uid}>{m.name}</option>
                               ))}
                             </select>
-
-                            {/* Priority */}
                             <select className="input-field" style={{marginBottom:7}} value={newTask.priority} onChange={e=>setNewTask({...newTask,priority:e.target.value as Priority})}>
                               {Object.entries(PRIORITY_CONFIG).map(([k,v])=>(
                                 <option key={k} value={k}>{v.label}</option>
                               ))}
                             </select>
-
-                            {/* Due date */}
                             <input type="date" className="input-field" style={{marginBottom:7}} value={newTask.dueDate} onChange={e=>setNewTask({...newTask,dueDate:e.target.value})}/>
-
-                            {/* Labels */}
                             <div style={{display:"flex",gap:6,marginBottom:7,flexWrap:"wrap"}}>
                               {newTask.labels.map(l=>(
                                 <span key={l.id} className="label-chip" style={{background:l.color.split("|")[0],color:l.color.split("|")[1],cursor:"pointer"}} onClick={()=>setNewTask({...newTask,labels:newTask.labels.filter(x=>x.id!==l.id)})}>
@@ -613,7 +648,6 @@ export default function WorkflowPage() {
                                   }
                                 }}/>
                             </div>
-
                             <div style={{display:"flex",gap:7}}>
                               <button className="btn-primary" style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:13}} onClick={()=>handleAddTask(status.key)}>Créer</button>
                               <button className="btn-ghost" onClick={()=>setShowNewTaskForm(null)} style={{padding:"8px 12px",fontSize:13}}>Annuler</button>
@@ -666,8 +700,6 @@ export default function WorkflowPage() {
         return (
           <div className="modal-overlay" onClick={()=>setSelectedTask(null)}>
             <div className="modal-box" style={{maxWidth:640,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
-
-              {/* Header */}
               <div style={{padding:"20px 24px",borderBottom:"1px solid #EBEBEC"}}>
                 <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
                   <div style={{flex:1}}>
@@ -695,12 +727,8 @@ export default function WorkflowPage() {
                 </div>
               </div>
 
-              {/* Body scrollable */}
               <div style={{overflowY:"auto",flex:1,padding:"20px 24px",display:"flex",flexDirection:"column",gap:20}}>
-
-                {/* Meta grid */}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                  {/* Assignee */}
                   <div>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>Assigné à</p>
                     {canEdit ? (
@@ -719,7 +747,6 @@ export default function WorkflowPage() {
                     )}
                   </div>
 
-                  {/* Priority */}
                   <div>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>Priorité</p>
                     {canEdit ? (
@@ -733,7 +760,6 @@ export default function WorkflowPage() {
                     ) : <span style={{fontSize:12,color:"#B0B0B4"}}>—</span>}
                   </div>
 
-                  {/* Due date */}
                   <div>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>Échéance</p>
                     {canEdit ? (
@@ -745,7 +771,6 @@ export default function WorkflowPage() {
                     ) : <span style={{fontSize:12,color:"#B0B0B4"}}>—</span>}
                   </div>
 
-                  {/* Status */}
                   <div>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>Statut</p>
                     {canEdit ? (
@@ -758,7 +783,6 @@ export default function WorkflowPage() {
                   </div>
                 </div>
 
-                {/* Description */}
                 {selectedTask.description && (
                   <div>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:8}}>Description</p>
@@ -766,7 +790,6 @@ export default function WorkflowPage() {
                   </div>
                 )}
 
-                {/* Subtasks */}
                 <div>
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
                     <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em"}}>
@@ -796,7 +819,6 @@ export default function WorkflowPage() {
                   </div>
                 </div>
 
-                {/* Comments */}
                 <div>
                   <p style={{fontSize:11,fontWeight:600,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:10}}>
                     Commentaires ({selectedTask.comments.length})
@@ -821,7 +843,6 @@ export default function WorkflowPage() {
                     </button>
                   </div>
                 </div>
-
               </div>
             </div>
           </div>
@@ -839,8 +860,13 @@ export default function WorkflowPage() {
             <div style={{padding:"16px 22px",overflowY:"auto",display:"flex",flexDirection:"column",gap:8}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:11}}>
                 <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{width:36,height:36,borderRadius:"50%",background:"linear-gradient(135deg,#F59E0B,#D97706)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff"}}>{owner?.name?.charAt(0)?.toUpperCase()||"?"}</div>
-                  <div><p style={{fontSize:13,fontWeight:600,color:"#111"}}>{owner?.name}</p><p style={{fontSize:11,color:"#888"}}>{owner?.email}</p></div>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:"linear-gradient(135deg,#F59E0B,#D97706)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#fff"}}>
+                    {(owner?.firstName||owner?.name||"?").charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <p style={{fontSize:13,fontWeight:600,color:"#111"}}>{owner?.firstName ? `${owner.firstName} ${owner.lastName||""}`.trim() : owner?.name}</p>
+                    <p style={{fontSize:11,color:"#888"}}>{owner?.email}</p>
+                  </div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:4,color:"#D97706"}}><Crown style={{width:12,height:12}}/><span style={{fontSize:11,fontWeight:600}}>Propriétaire</span></div>
               </div>
@@ -883,27 +909,52 @@ export default function WorkflowPage() {
 
       {/* ── INVITE MODAL ── */}
       {showInviteModal && (
-        <div className="modal-overlay" onClick={()=>setShowInviteModal(false)}>
+        <div className="modal-overlay" onClick={()=>{ if(!inviting){ setShowInviteModal(false); setInviteStatus("idle"); } }}>
           <div className="modal-box" style={{maxWidth:400,padding:26}} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
               <h2 style={{fontFamily:"'Bricolage Grotesque',sans-serif",fontWeight:700,fontSize:16,color:"#111"}}>Inviter un membre</h2>
-              <button onClick={()=>setShowInviteModal(false)} style={{color:"#B0B0B4"}}><X style={{width:16,height:16}}/></button>
+              <button onClick={()=>{ setShowInviteModal(false); setInviteStatus("idle"); }} style={{color:"#B0B0B4"}}><X style={{width:16,height:16}}/></button>
             </div>
-            <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              <input type="email" placeholder="Adresse email" className="input-field" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)}/>
-              <select className="input-field" value={inviteRole} onChange={e=>setInviteRole(e.target.value)}>
-                {ROLES.filter(r=>r.key!=="owner").map(r=><option key={r.key} value={r.key}>{r.label}</option>)}
-              </select>
-            </div>
-            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
-              <button className="btn-ghost" onClick={()=>setShowInviteModal(false)}>Annuler</button>
-              <button className="btn-primary" onClick={handleInviteMember} disabled={inviting}>
-                {inviting?"Envoi...":<><UserPlus style={{width:13,height:13}}/> Inviter</>}
-              </button>
-            </div>
+
+            {inviteStatus === "success" ? (
+              <div style={{textAlign:"center",padding:"20px 0"}}>
+                <div style={{width:48,height:48,borderRadius:"50%",background:"#D1FAE5",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 12px"}}>
+                  <Check style={{width:22,height:22,color:"#059669"}}/>
+                </div>
+                <p style={{fontFamily:"'Bricolage Grotesque',sans-serif",fontWeight:600,fontSize:15,color:"#111",marginBottom:4}}>Invitation envoyée !</p>
+                <p style={{fontSize:12,color:"#888"}}>Le membre recevra un email avec les instructions.</p>
+              </div>
+            ) : (
+              <>
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  <input
+                    type="email"
+                    placeholder="Adresse email"
+                    className="input-field"
+                    value={inviteEmail}
+                    onChange={e=>setInviteEmail(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==="Enter") handleInviteMember(); }}
+                  />
+                  <select className="input-field" value={inviteRole} onChange={e=>setInviteRole(e.target.value)}>
+                    {ROLES.filter(r=>r.key!=="owner").map(r=><option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select>
+                </div>
+
+                {inviteStatus === "error" && (
+                  <p style={{fontSize:12,color:"#EF4444",marginTop:10}}>Une erreur est survenue. Vérifiez l'email et réessayez.</p>
+                )}
+
+                <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+                  <button className="btn-ghost" onClick={()=>{ setShowInviteModal(false); setInviteStatus("idle"); }}>Annuler</button>
+                  <button className="btn-primary" onClick={handleInviteMember} disabled={inviting||!inviteEmail.trim()}>
+                    {inviting ? "Envoi en cours..." : <><UserPlus style={{width:13,height:13}}/> Inviter</>}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
     </>
   );
-}
+}  
